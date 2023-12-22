@@ -300,8 +300,8 @@ if [[ "${AWS_IB_ACTION}" == "start" ]]; then
   else
     echo "starting imagebuilder pipeline..."
     aws imagebuilder start-image-pipeline-execution --image-pipeline-arn ${AWS_IB_ARN} --profile ${AWS_PROFILE} --region ${AWS_REGION}
-    echo "Get status: $0 ${AWS_IB_NAME} status --profile ${AWS_PROFILE} --region ${AWS_REGION}"
-    echo "Stop: $0 ${AWS_IB_NAME} stop --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+    echo "Get status: $(basename $0) ${AWS_IB_NAME} status --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+    echo "Stop: $(basename $0) ${AWS_IB_NAME} stop --profile ${AWS_PROFILE} --region ${AWS_REGION}"
   fi
 fi
 
