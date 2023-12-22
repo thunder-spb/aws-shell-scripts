@@ -1,0 +1,84 @@
+#!/bin/bash
+
+set -e
+
+AWS_PROFILE=$1
+
+usage() {
+  echo -e "Usage: $(basename $0) [cloudwatch log group name] [cloudwatch log group's stream name] [-o|--outfile file_name] [-p|--profile AWS Profile Name] [-r|--region AWS Region Name]"
+  echo -e "Options:"
+  echo -e " -h, --help         show this help"
+  echo -e " -d, --debug        debug mode, outputs all the commands, environment variable equivalent DEBUG=1"
+  echo -e " -p, --profile      AWS Profile Name, environment variable equivalent AWS_PROFILE"
+}
+
+set_debug() {
+  set -x
+}
+
+[[ "x${DEBUG}" == 'x1' ]] && set_debug
+
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+  -p | --profile)
+    AWS_PROFILE="$2"
+    shift # past argument
+    shift # past value
+    ;;
+  -h | --help)
+    usage
+    shift
+    exit 0
+    ;;
+  -d | --debug)
+    set_debug
+    shift
+    exit 0
+    ;;
+  -* | --*)
+    echo "Unknown option $1"
+    usage
+    exit 1
+    ;;
+  *)
+    POSITIONAL_ARGS+=("$1") # save positional arg
+    shift                   # past argument
+    ;;
+  esac
+done
+
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+IS_FZF=false
+[[ -t 1 && "$(
+  type fzf &>/dev/null
+  echo $?
+)" -eq 0 ]] && IS_FZF=true
+
+choose_profile_interactive() {
+  local choice
+  choice="$(FZF_DEFAULT_COMMAND="aws-profiles" \
+    fzf --ansi --multi --preview "perl -00 -ne 'print if /\[profile {}\]/' ~/.aws/config" || true)"
+
+  if [[ -z "${choice}" ]]; then
+    echo 2>&1 "error: you did not choose any of the options"
+    exit 1
+  else
+    AWS_PROFILE="${choice}"
+  fi
+}
+
+[[ -z ${AWS_PROFILE} ]] && {
+  if ${IS_FZF}; then
+    choose_profile_interactive
+  else
+    echo "Log Group is not defined!"
+    exit 1
+  fi
+}
+
+for PROF in ${AWS_PROFILE}; do
+  aws-azure-login login --no-prompt --profile ${PROF}
+done

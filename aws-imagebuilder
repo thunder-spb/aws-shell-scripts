@@ -1,0 +1,332 @@
+#!/bin/bash
+
+DEBUG=${DEBUG:-0}
+
+[[ "x${DEBUG}" == 'x1' ]] && set -x
+
+AWS_REGION=${AWS_REGION:-us-east-1}
+AWS_IB_ACTIONS="start\nstatus\nstop"
+
+usage() {
+  echo "Usage: $(basename $0) [ImageBuilder Pipeline Name] [Action] [-p|--profile AWS Profile Name] [-r|--region AWS Region Name]"
+  echo -e "If fzf tool installed, all parameters could be selected interactively"
+  echo -e "Options:"
+  echo -e " -h, --help         show this help"
+  echo -e " -d, --debug        debug mode, outputs all the commands, environment variable equivalent DEBUG=1"
+  echo -e " -p, --profile      AWS Profile Name, environment variable equivalent AWS_PROFILE"
+  echo -e " -r, --region       AWS Region Name, environment variable equivalent AWS_REGION"
+  echo -e ""
+  echo -e "You must be logged in using AWS Profile you choose or define via environment variables"
+  echo -e "Env variables:"
+  echo -e "  AWS_PROFILE                   Profile name to use"
+  echo -e "  AWS_REGION                    Region to use"
+  echo -e "  AWS_IB_NAME                   ImageBuilder name to use"
+  echo -e "  AWS_IB_ACTION                 ImageBuilder Action to run, allowed actions are 'create', 'status' and 'stop'"
+  echo -e "                                Alowed actions: start, stop or status"
+  echo -e "  AWS_IB_PIPELINE_BUILD_ARN     ImageBuilder Pipeline Build ARN to use for stop action"
+}
+
+set_debug() {
+  set -x
+}
+
+[[ "x${DEBUG}" == 'x1' ]] && set_debug
+
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+  -r | --region)
+    AWS_REGION="$2"
+    shift # past argument
+    shift # past value
+    ;;
+  -p | --profile)
+    AWS_PROFILE="$2"
+    shift # past argument
+    shift # past value
+    ;;
+  -h | --help)
+    usage
+    shift
+    exit 0
+    ;;
+  -d | --debug)
+    set_debug
+    shift
+    exit 0
+    ;;
+  -* | --*)
+    echo "Unknown option $1"
+    usage
+    exit 1
+    ;;
+  *)
+    POSITIONAL_ARGS+=("$1") # save positional arg
+    shift                   # past argument
+    ;;
+  esac
+done
+
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+AWS_IB_NAME=$1
+AWS_IB_ACTION=$2
+
+IS_FZF=false
+[[ -t 1 && "$(
+  type fzf &>/dev/null
+  echo $?
+)" -eq 0 ]] && IS_FZF=true
+
+check_token_expiration() {
+  aws sts get-caller-identity --profile ${AWS_PROFILE}
+  return $?
+}
+
+choose_profile_interactive() {
+  type aws-profiles &>/dev/null || {
+    echo "error: aws-profiles helper script is not available."
+    exit 1
+  }
+  local choice
+  choice="$(FZF_DEFAULT_COMMAND="aws-profiles" \
+    fzf --ansi --no-preview || true)"
+  if [[ -z "${choice}" ]]; then
+    echo 2>&1 "error: you did not choose any of the options"
+    exit 1
+  else
+    AWS_PROFILE="${choice}"
+  fi
+}
+
+choose_imagebuilder_action_interactive() {
+  local choice
+  choice="$(FZF_DEFAULT_COMMAND="echo -e \"${AWS_IB_ACTIONS}\"" \
+    fzf --ansi --no-preview || true)"
+  if [[ -z "${choice}" ]]; then
+    echo 2>&1 "error: you did not choose any of the options"
+    exit 1
+  else
+    AWS_IB_ACTION="${choice}"
+  fi
+}
+
+choose_imagebuilder_pipeline_build_interactive() {
+  local choice
+  local _pipelines=$(imagebuilder_get_running_pipeline_builds "${AWS_IB_ARN}")
+
+  [[ ! -z "${_pipelines}" ]] && {
+    while IFS= read -r line; do
+      _builds+=$(echo "${line}" | cut -d' ' -f1)
+    done <<<"${_pipelines}"
+  }
+
+  choice="$(FZF_DEFAULT_COMMAND="echo \"${_builds}\"" \
+    fzf --ansi --no-preview || true)"
+  if [[ -z "${choice}" ]]; then
+    echo 2>&1 "error: you did not choose any of the options"
+    exit 1
+  else
+    AWS_IB_PIPELINE_BUILD_ARN="${choice}"
+  fi
+}
+
+[[ -z "${AWS_PROFILE}" ]] && {
+  if ${IS_FZF}; then
+    choose_profile_interactive
+  else
+    echo "error: AWS Profile is not defined!"
+    exit 1
+  fi
+}
+
+check_token_expiration
+[[ $? -ne 0 ]] && exit 1
+
+# Try to find arn by provided name
+imagebuilder_get_arn_by_name() {
+  local name=$1
+  AWS_IB_ARN=$(aws imagebuilder list-image-pipelines --region ${AWS_REGION} --profile ${AWS_PROFILE} --filters "name=name,values=${name}" --query 'imagePipelineList[].arn' --output text)
+  [[ -z "${AWS_IB_ARN}" ]] && {
+    echo "error: Could not find ARN by name ${name}... Choose the correct name..."
+    sleep 5
+  }
+}
+
+[[ ! -z "${AWS_IB_NAME}" ]] && {
+  imagebuilder_get_arn_by_name "${AWS_IB_NAME}"
+}
+
+# Select the pipeline interactively
+_imagebuilder_pipeline_parse_output() {
+  if [ ! -z "$cli_output" ]; then
+    # The output parsing below also needs to be adapted as needed.
+    pipelines_json+="$(echo $cli_output | jq -r '.imagePipelineList[] | [ { "name": .name, "arn": .arn } ]')"
+    next_token=$(echo $cli_output | jq -r ".nextToken")
+  fi
+}
+
+choose_imagebuilder_pipeline_interactive() {
+  local choice
+  local next_token
+  local cli_command="aws imagebuilder list-image-pipelines --region ${AWS_REGION} --profile ${AWS_PROFILE}"
+  local cli_output
+  local pipelines_json
+
+  cli_output=$($cli_command)
+  # echo $cli_output >> cli_output
+  _imagebuilder_pipeline_parse_output
+
+  # The below while loop runs until either the command errors due to throttling or
+  # comes back with a pagination token.  In the case of being throttled / throwing
+  # an error, it sleeps for 1 second and then tries again.
+  while [ "$next_token" != "null" ]; do
+    sleep 1
+    cli_output=$($cli_command --next-token $next_token)
+    _imagebuilder_pipeline_parse_output
+  done #pagination loop
+
+  local _pipelines=$(echo $pipelines_json | jq -s -r 'add | .[] | "\(.name)|\(.arn)"')
+  local _names
+  for _pipeline in $_pipelines; do
+    local k=$(echo $_pipeline | cut -d"|" -f1)
+    _names+="${k}"$'\n'
+  done
+
+  choice="$(FZF_DEFAULT_COMMAND="echo \"${_names}\"" fzf --ansi --no-preview || true)"
+  if [[ -z "${choice}" ]]; then
+    echo 2>&1 "error: you did not choose any of the options"
+    exit 1
+  else
+    AWS_IB_NAME="${choice}"
+    AWS_IB_ARN=$(echo "${_pipelines}" | grep "^${choice}" | cut -d"|" -f2)
+  fi
+}
+
+[[ -z "${AWS_IB_ARN}" ]] && {
+  if ${IS_FZF}; then
+    choose_imagebuilder_pipeline_interactive || {
+      echo "error: Could not get imagebuilder pipelines"
+      exit 1
+    }
+  else
+    echo "error: ImageBuilder pipeline is not defined!"
+    exit 1
+  fi
+}
+
+[[ -z "${AWS_IB_ACTION}" ]] && {
+  if ${IS_FZF}; then
+    choose_imagebuilder_action_interactive
+  else
+    echo "error: ImageBuilder Action is not defined!"
+    exit 1
+  fi
+}
+
+_imagebuilder_pipeline_images_parse_output() {
+  if [ ! -z "$cli_output" ]; then
+    # The output parsing below also needs to be adapted as needed.
+    statuses_json+="$(echo $cli_output | jq -r '.imageSummaryList[] | [ { "arn": .arn, "date": .dateCreated, "status": .state.status, "build_type": .buildType } ]')"
+    next_token=$(echo $cli_output | jq -r ".nextToken")
+  fi
+}
+
+imagebuilder_get_status() {
+  # rm -fv cli_output || true
+  local arn=$1
+  local statuses_json
+  local next_token
+  local cli_command="aws imagebuilder list-image-pipeline-images --image-pipeline-arn ${arn} --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+  # local cli_command=$(aws imagebuilder list-image-pipeline-images  --image-pipeline-arn ${arn} --profile ${AWS_PROFILE} --region ${AWS_REGION} \
+  #   --query "reverse(sort_by(imageSummaryList, &dateCreated))")
+  local cli_output
+
+  cli_output=$($cli_command)
+  # echo $cli_output >> cli_output
+  _imagebuilder_pipeline_images_parse_output
+
+  # The below while loop runs until either the command errors due to throttling or
+  # comes back with a pagination token.  In the case of being throttled / throwing
+  # an error, it sleeps for 1 second and then tries again.
+  while [ "$next_token" != "null" ]; do
+    sleep 1
+    cli_output=$($cli_command --next-token $next_token)
+    _imagebuilder_pipeline_images_parse_output
+  done #pagination loop
+
+  statuses=$(echo $statuses_json | jq -s -r 'add | sort_by(.date) | reverse | .[] | "\(.arn) \(.date) \(.status) \(.build_type)"')
+  echo -e "Images states:\n${statuses}"
+}
+
+imagebuilder_get_running_pipeline_builds() {
+  local arn=$1
+  aws imagebuilder list-image-pipeline-images --image-pipeline-arn ${arn} --profile ${AWS_PROFILE} --region ${AWS_REGION} \
+    --query "imageSummaryList[?state.status != 'AVAILABLE' && state.status != 'FAILED' && state.status != 'CANCELLED']" | jq -r '. |= sort_by(.dateCreated) | reverse | .[] | "\(.arn) \(.dateCreated) \(.state.status)"'
+}
+
+imagebuilder_is_pipeline_running() {
+  local result=0
+  local arn=$1
+  local running=$(imagebuilder_get_running_pipeline_builds "${arn}")
+
+  [[ ! -z "${running}" ]] && result=1
+
+  return $result
+}
+
+## Final check
+[[ -z ${AWS_IB_ARN} ]] && {
+  echo "error: Could not find ARN for ${AWS_IB_NAME}"
+  exit 1
+}
+echo -e "${AWS_IB_ACTIONS}" | grep -qi "${AWS_IB_ACTION}" || {
+  echo "error: Not in allowed actions list: ${AWS_IB_ACTION}"
+  exit 1
+}
+
+echo "AWS Profile: ${AWS_PROFILE}"
+echo "AWS Region: ${AWS_REGION}"
+echo "ImageBulder Name: ${AWS_IB_NAME}"
+echo "ImageBuilder ARN: ${AWS_IB_ARN}"
+echo "Action: ${AWS_IB_ACTION}"
+
+if [[ "${AWS_IB_ACTION}" == "start" ]]; then
+  imagebuilder_is_pipeline_running "${AWS_IB_ARN}"
+  if [[ $? == "1" ]]; then
+    echo "pipeline is already running..."
+    imagebuilder_get_status "${AWS_IB_ARN}"
+  else
+    echo "starting imagebuilder pipeline..."
+    aws imagebuilder start-image-pipeline-execution --image-pipeline-arn ${AWS_IB_ARN} --profile ${AWS_PROFILE} --region ${AWS_REGION}
+    echo "Get status: $0 ${AWS_IB_NAME} status --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+    echo "Stop: $0 ${AWS_IB_NAME} stop --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+  fi
+fi
+
+if [[ "${AWS_IB_ACTION}" == "status" ]]; then
+  imagebuilder_get_status "${AWS_IB_ARN}"
+fi
+
+if [[ "${AWS_IB_ACTION}" == "stop" ]]; then
+  imagebuilder_is_pipeline_running "${AWS_IB_ARN}"
+  [[ $? == "0" ]] && {
+    echo "error: no builds running for selected pipeline..."
+    exit 1
+  }
+
+  [[ -z "${AWS_IB_PIPELINE_BUILD_ARN}" ]] && {
+    if ${IS_FZF}; then
+      choose_imagebuilder_pipeline_build_interactive || {
+        echo "error: Could not get imagebuilder pipeline's builds"
+        exit 1
+      }
+    else
+      echo "error: ImageBuilder pipeline build ARN is not defined!"
+      exit 1
+    fi
+  }
+  aws imagebuilder cancel-image-creation --image-build-version-arn "${AWS_IB_PIPELINE_BUILD_ARN}" --profile ${AWS_PROFILE} --region ${AWS_REGION}
+
+fi

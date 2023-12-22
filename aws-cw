@@ -1,0 +1,176 @@
+#!/bin/bash
+
+set -e
+
+AWS_REGION=${AWS_REGION:-us-east-1}
+
+usage() {
+  echo -e "Usage: $(basename $0) [cloudwatch log group name] [cloudwatch log group's stream name] [-o|--outfile file_name] [-p|--profile AWS Profile Name] [-r|--region AWS Region Name]"
+  echo -e "Options:"
+  echo -e " -h, --help         show this help"
+  echo -e " -d, --debug        debug mode, outputs all the commands, environment variable equivalent DEBUG=1"
+  echo -e " -p, --profile      AWS Profile Name, environment variable equivalent AWS_PROFILE"
+  echo -e " -r, --region       AWS Region Name, environment variable equivalent AWS_REGION"
+}
+
+set_debug() {
+  set -x
+}
+
+[[ "x${DEBUG}" == 'x1' ]] && set_debug
+
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+  -o | --outfile)
+    OUTFILE="$2"
+    shift # past argument
+    shift # past value
+    ;;
+  -r | --region)
+    AWS_REGION="$2"
+    shift # past argument
+    shift # past value
+    ;;
+  -p | --profile)
+    AWS_PROFILE="$2"
+    shift # past argument
+    shift # past value
+    ;;
+  -h | --help)
+    usage
+    shift
+    exit 0
+    ;;
+  -d | --debug)
+    set_debug
+    shift
+    exit 0
+    ;;
+  -* | --*)
+    echo "Unknown option $1"
+    usage
+    exit 1
+    ;;
+  *)
+    POSITIONAL_ARGS+=("$1") # save positional arg
+    shift                   # past argument
+    ;;
+  esac
+done
+
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+AWS_CW_LOGGROUP=$1
+AWS_CW_LOGSTREAM=$2
+
+IS_FZF=false
+[[ -t 1 && "$(
+  type fzf &>/dev/null
+  echo $?
+)" -eq 0 ]] && IS_FZF=true
+
+choose_profile_interactive() {
+
+  type aws-profiles &>/dev/null || {
+    echo "ERROR: aws-profiles helper script is not available."
+    exit 1
+  }
+
+  local choice
+  choice="$(FZF_DEFAULT_COMMAND="aws-profiles" \
+    fzf --ansi --no-preview || true)"
+  if [[ -z "${choice}" ]]; then
+    echo 2>&1 "error: you did not choose any of the options"
+    exit 1
+  else
+    AWS_PROFILE="${choice}"
+  fi
+}
+
+choose_loggroup_interactive() {
+  local choice
+
+  choice="$(
+    FZF_DEFAULT_COMMAND="aws logs describe-log-groups --region ${AWS_REGION} --profile ${AWS_PROFILE} | jq -r '.logGroups[].logGroupName'"
+
+    fzf --ansi --no-preview || true
+  )"
+  if [[ -z "${choice}" ]]; then
+    echo 2>&1 "error: you did not choose any of the options"
+    exit 1
+  else
+    AWS_CW_LOGGROUP="${choice}"
+  fi
+}
+
+choose_logstream_interactive() {
+  local choice
+
+  choice="$(
+    FZF_DEFAULT_COMMAND="aws logs describe-log-streams --log-group-name ${AWS_CW_LOGGROUP} --region ${AWS_REGION} --profile ${AWS_PROFILE} | jq -r '.logStreams[].logStreamName'"
+
+    fzf --ansi --no-preview || true
+  )"
+  if [[ -z "${choice}" ]]; then
+    echo 2>&1 "error: you did not choose any of the options"
+    exit 1
+  else
+    AWS_CW_LOGSTREAM="${choice}"
+  fi
+}
+
+[[ -z ${AWS_PROFILE} ]] && {
+  if ${IS_FZF}; then
+    choose_profile_interactive
+  else
+    echo "Log Group is not defined!"
+    exit 1
+  fi
+}
+
+[[ -z ${AWS_CW_LOGGROUP} ]] && {
+  if ${IS_FZF}; then
+    choose_loggroup_interactive || {
+      echo "Could not get log groups"
+      exit 1
+    }
+  else
+    echo "Log Group is not defined!"
+    exit 1
+  fi
+}
+
+[[ -z ${AWS_CW_LOGSTREAM} ]] && {
+  if ${IS_FZF}; then
+    choose_logstream_interactive || {
+      echo "Cloud not get log streams"
+      exit 1
+    }
+  else
+    echo "Log Group's Stream is not defined!"
+    exit 1
+  fi
+}
+
+echo "AWS Profile: ${AWS_PROFILE}"
+echo "AWS Region: ${AWS_REGION}"
+echo "Log Group: ${AWS_CW_LOGGROUP}"
+echo "Log Group Stream: ${AWS_CW_LOGSTREAM}"
+[[ ! -z ${OUTFILE} ]] && { echo "Redirecting output to: ${OUTFILE}"; }
+
+get_logs() {
+  aws logs get-log-events \
+    --log-group-name ${AWS_CW_LOGGROUP} \
+    --log-stream-name ${AWS_CW_LOGSTREAM} \
+    --region ${AWS_REGION} \
+    --profile ${AWS_PROFILE} |
+    jq -r '.events[].message'
+}
+
+REDIRECT=/dev/tty
+
+[[ ! -z ${OUTFILE} ]] && REDIRECT=${OUTFILE}
+
+get_logs >${REDIRECT}

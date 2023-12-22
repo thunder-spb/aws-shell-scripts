@@ -1,0 +1,43 @@
+#!/bin/bash
+set -e
+
+usage() {
+  echo "Usage: $(basename $0)"
+  echo -e "To override aws profiles file location, set ENV variable AWS_CONFIG_FILE, otherwise script will try to read ${HOME}/.aws/config"
+  echo -e "Options:"
+  echo -e " -h, --help         show this help"
+  echo -e " -d, --debug        debug mode, outputs all the commands"
+  echo -e "                    or set DEBUG=1"
+}
+
+set_debug() {
+  set -x
+}
+
+[[ "x${DEBUG}" == 'x1' ]] && set_debug
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+  -h | --help)
+    usage
+    shift
+    exit 0
+    ;;
+  -d | --debug)
+    set_debug
+    shift
+    exit 0
+    ;;
+  -* | --*)
+    echo "Unknown option $1"
+    usage
+    exit 1
+    ;;
+  esac
+done
+
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+[[ -r "${AWS_CONFIG_FILE:-$HOME/.aws/config}" ]] || exit 1
+
+grep --color=auto --exclude-dir={.bzr,CVS,.git,.hg,.svn,.idea,.tox} --color=never -Eo '\[.*\]' "${AWS_CONFIG_FILE:-$HOME/.aws/config}" | sed -E 's/^[[:space:]]*\[(profile)?[[:space:]]*([-_[:alnum:]\.@]+)\][[:space:]]*$/\2/g'
