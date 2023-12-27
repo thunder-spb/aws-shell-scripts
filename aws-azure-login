@@ -70,11 +70,11 @@ choose_profile_interactive() {
   fi
 }
 
-[[ -z ${AWS_PROFILE} ]] && {
+[[ -z "${AWS_PROFILE}" ]] && {
   if ${IS_FZF}; then
     choose_profile_interactive
   else
-    echo "Log Group is not defined!"
+    echo "error: AWS Profile is not defined!"
     exit 1
   fi
 }
