@@ -245,10 +245,9 @@ get_logs() {
       request_ids=$(echo "${log_events}" | grep -i "START RequestId" | awk '{print $3}' | sed 's/"//g')
       echo -e "${request_ids}" | __fzf_base_fzf --ansi --height 90% \
         --border-label " 📒 Log Events " \
-        --header "CTRL-Y/E: up/down" \
+        --header "SHIFT-UP/DOWN: scroll up/down" \
         --header-first \
         --tiebreak begin \
-        --bind ctrl-y:preview-up,ctrl-e:preview-down \
         --preview-window right,80% \
         --preview-border rounded \
         --preview-label " Log " \
