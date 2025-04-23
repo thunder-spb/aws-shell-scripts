@@ -244,13 +244,13 @@ get_logs() {
     if ${IS_FZF}; then
       request_ids=$(echo "${log_events}" | grep -i "START RequestId" | awk '{print $3}' | sed 's/"//g')
       echo -e "${request_ids}" | __fzf_base_fzf --ansi --height 90% \
-        --border-label " 📒 Log Events " \
+        --border-label " 📔 Log Events " \
         --header "SHIFT-UP/DOWN: scroll up/down" \
         --header-first \
         --tiebreak begin \
         --preview-window right,80% \
         --preview-border rounded \
-        --preview-label " Log " \
+        --preview-label " 📜 Log " \
         --preview-label-pos 0 \
         --preview "echo '${log_events}' | sed -n '/START RequestId: {}/,/REPORT RequestId: {}/p'"
     else
