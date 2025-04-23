@@ -223,12 +223,6 @@ echo -e "${GREEN}${CHECK_MARK} Log Group Stream:${NC} ${AWS_CW_LOGSTREAM}"
 echo -e "${GREEN}${CHECK_MARK} Command for direct query:${NC} $0 '${AWS_CW_LOGGROUP}' '${AWS_CW_LOGSTREAM}' --profile ${AWS_PROFILE} --region ${AWS_REGION} "
 [[ ! -z ${OUTFILE} ]] && { echo -e "${GREEN}${ARROW_UP} Redirecting output to:${NC} ${OUTFILE}"; }
 
-# Extract a single request id's log events from the log events string
-get_events() {
-  local request_id
-  request_id=$(echo "${log_events}" | sed -n "/START RequestId: $request_id/,/REPORT RequestId: $request_id/p")
-}
-
 # Retrieves log events from a specified AWS CloudWatch log group and log stream.
 # If log events are found, they are either printed to the console or redirected to an output file.
 # If fzf is available and enabled, allows interactive selection of request IDs from the log events.
