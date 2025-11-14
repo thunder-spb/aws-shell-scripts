@@ -1,0 +1,71 @@
+#!/bin/bash
+
+set -e
+
+SCRIPT_PATH=$(dirname $(readlink -f "${0}"))
+source "${SCRIPT_PATH}/aws-functions.sh"
+
+usage() {
+  echo "Usage: $(basename $0) [-p|--profile AWS Profile Name] [-r|--region AWS Region Name] [-s|--session AWS Session Name]"
+  echo ""
+  echo "Options:"
+  echo "  -p, --profile NAME   AWS Profile Name"
+  echo "  -r, --region NAME    AWS Region Name"
+  echo "  -s, --session NAME   AWS SSO Session Name"
+  echo "  -h, --help           Show this help message"
+  echo ""
+  echo "Examples:"
+  echo "  $(basename $0)                                    # Interactive mode (requires fzf)"
+  echo "  $(basename $0) --profile prod --region us-east-1"
+  echo "  $(basename $0) --profile dev --region eu-west-1 --session my-sso-session"
+}
+
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -r|--region)
+      AWS_REGION="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -p|--profile)
+      AWS_PROFILE="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -s|--session)
+      AWS_SSO_SESSION_NAME="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -h|--help)
+      usage
+      shift
+      exit 0
+      ;;
+    *)
+      log_error "Unknown option $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+check_aws_profile
+check_aws_region
+
+log_ok "AWS Profile: ${AWS_PROFILE}"
+log_ok "AWS Region: ${AWS_REGION}"
+
+choose_eks_cluster_interactive
+
+log_info "Auth to '${AWS_EKS_CLUSTER_NAME}' eks cluster"
+AWS_EKS_CLUSTER_ALIAS="${AWS_PROFILE}-${AWS_EKS_CLUSTER_NAME}"
+
+aws eks update-kubeconfig --name ${AWS_EKS_CLUSTER_NAME} --profile ${AWS_PROFILE} --region ${AWS_REGION} --alias ${AWS_EKS_CLUSTER_ALIAS}
+
+log_ok "Saved as: ${AWS_EKS_CLUSTER_ALIAS}"
+
+log_info "Checking k8s auth"
+kubectl get ns

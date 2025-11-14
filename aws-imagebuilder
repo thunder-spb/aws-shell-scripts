@@ -1,29 +1,40 @@
 #!/bin/bash
 
-DEBUG=${DEBUG:-0}
 
-[[ "x${DEBUG}" == 'x1' ]] && set -x
+SCRIPT_PATH=$(dirname $(readlink -f "${0}"))
+source "${SCRIPT_PATH}/aws-functions.sh"
 
-AWS_REGION=${AWS_REGION:-us-east-1}
 AWS_IB_ACTIONS="start\nstatus\nstop"
 
 usage() {
   echo "Usage: $(basename $0) [ImageBuilder Pipeline Name] [Action] [-p|--profile AWS Profile Name] [-r|--region AWS Region Name]"
-  echo -e "If fzf tool installed, all parameters could be selected interactively"
-  echo -e "Options:"
-  echo -e " -h, --help         show this help"
-  echo -e " -d, --debug        debug mode, outputs all the commands, environment variable equivalent DEBUG=1"
-  echo -e " -p, --profile      AWS Profile Name, environment variable equivalent AWS_PROFILE"
-  echo -e " -r, --region       AWS Region Name, environment variable equivalent AWS_REGION"
-  echo -e ""
-  echo -e "You must be logged in using AWS Profile you choose or define via environment variables"
-  echo -e "Env variables:"
-  echo -e "  AWS_PROFILE                   Profile name to use"
-  echo -e "  AWS_REGION                    Region to use"
-  echo -e "  AWS_IB_NAME                   ImageBuilder name to use"
-  echo -e "  AWS_IB_ACTION                 ImageBuilder Action to run, allowed actions are 'create', 'status' and 'stop'"
-  echo -e "                                Alowed actions: start, stop or status"
-  echo -e "  AWS_IB_PIPELINE_BUILD_ARN     ImageBuilder Pipeline Build ARN to use for stop action"
+  echo ""
+  echo "If fzf tool is installed, all parameters can be selected interactively"
+  echo ""
+  echo "Options:"
+  echo "  -p, --profile NAME   AWS Profile Name (or set AWS_PROFILE)"
+  echo "  -r, --region NAME   AWS Region Name (or set AWS_REGION)"
+  echo "  -d, --debug          Debug mode, outputs all commands (or set DEBUG=1)"
+  echo "  -h, --help           Show this help message"
+  echo ""
+  echo "Actions:"
+  echo "  start    Start a new image build pipeline execution"
+  echo "  status   Display status and history of image builds for a pipeline"
+  echo "  stop     Cancel a running image build"
+  echo ""
+  echo "Environment Variables:"
+  echo "  AWS_PROFILE              Profile name to use"
+  echo "  AWS_REGION               Region to use"
+  echo "  AWS_IB_NAME              ImageBuilder pipeline name to use"
+  echo "  AWS_IB_ACTION            Action to run (start, status, or stop)"
+  echo "  AWS_IB_PIPELINE_BUILD_ARN Pipeline Build ARN to use for stop action"
+  echo ""
+  echo "Examples:"
+  echo "  $(basename $0)                                    # Interactive mode (requires fzf)"
+  echo "  $(basename $0) my-pipeline start                  # Start pipeline build"
+  echo "  $(basename $0) my-pipeline status --profile prod   # Check pipeline status"
+  echo "  $(basename $0) my-pipeline stop --profile prod --region us-east-1"
+  echo "  AWS_PROFILE=prod $(basename $0) my-pipeline start"
 }
 
 set_debug() {
@@ -72,33 +83,6 @@ set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
 
 AWS_IB_NAME=$1
 AWS_IB_ACTION=$2
-
-IS_FZF=false
-[[ -t 1 && "$(
-  type fzf &>/dev/null
-  echo $?
-)" -eq 0 ]] && IS_FZF=true
-
-check_token_expiration() {
-  aws sts get-caller-identity --profile ${AWS_PROFILE}
-  return $?
-}
-
-choose_profile_interactive() {
-  type aws-profiles &>/dev/null || {
-    echo "error: aws-profiles helper script is not available."
-    exit 1
-  }
-  local choice
-  choice="$(FZF_DEFAULT_COMMAND="aws-profiles" \
-    fzf --ansi --no-preview || true)"
-  if [[ -z "${choice}" ]]; then
-    echo 2>&1 "error: you did not choose any of the options"
-    exit 1
-  else
-    AWS_PROFILE="${choice}"
-  fi
-}
 
 choose_imagebuilder_action_interactive() {
   local choice
@@ -278,57 +262,55 @@ imagebuilder_is_pipeline_running() {
 
 ## Final check
 [[ -z ${AWS_IB_ARN} ]] && {
-  echo "error: Could not find ARN for ${AWS_IB_NAME}"
-  exit 1
+  log_fatal "Could not find ARN for ${BOLD}${AWS_IB_NAME}${NC}"
 }
 echo -e "${AWS_IB_ACTIONS}" | grep -qi "${AWS_IB_ACTION}" || {
-  echo "error: Not in allowed actions list: ${AWS_IB_ACTION}"
-  exit 1
+  log_fatal "Not in allowed actions list: ${AWS_IB_ACTION}"
 }
 
-echo "AWS Profile: ${AWS_PROFILE}"
-echo "AWS Region: ${AWS_REGION}"
-echo "ImageBulder Name: ${AWS_IB_NAME}"
-echo "ImageBuilder ARN: ${AWS_IB_ARN}"
-echo "Action: ${AWS_IB_ACTION}"
+check_aws_profile
+check_aws_region
+
+log_ok "${BOLD}AWS Profile:${NC} ${AWS_PROFILE}"
+log_ok "${BOLD}AWS Region:${NC} ${AWS_REGION}"
+log_ok "${BOLD}ImageBulder Name:${NC} ${AWS_IB_NAME}"
+log_ok "${BOLD}ImageBuilder ARN:${NC} ${AWS_IB_ARN}"
+log_ok "${BOLD}Action:${NC} ${AWS_IB_ACTION}"
 
 if [[ "${AWS_IB_ACTION}" == "start" ]]; then
   imagebuilder_is_pipeline_running "${AWS_IB_ARN}"
   if [[ $? == "1" ]]; then
-    echo "pipeline is already running..."
+    log_info "Pipeline is already running..."
     imagebuilder_get_status "${AWS_IB_ARN}"
   else
-    echo "starting imagebuilder pipeline..."
+    log_info "Starting imagebuilder pipeline..."
     aws imagebuilder start-image-pipeline-execution --image-pipeline-arn ${AWS_IB_ARN} --profile ${AWS_PROFILE} --region ${AWS_REGION}
   fi
   echo "Helpers:"
-  echo "  Get status: $(basename $0) ${AWS_IB_NAME} status --profile ${AWS_PROFILE} --region ${AWS_REGION}"
-  echo "  Stop: $(basename $0) ${AWS_IB_NAME} stop --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+  echo "  ${BOLD}Get status:${NC} $(basename $0) ${AWS_IB_NAME} status --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+  echo "  ${BOLD}Stop:${NC} $(basename $0) ${AWS_IB_NAME} stop --profile ${AWS_PROFILE} --region ${AWS_REGION}"
 fi
 
 if [[ "${AWS_IB_ACTION}" == "status" ]]; then
   imagebuilder_get_status "${AWS_IB_ARN}"
   echo "Helpers:"
-  echo "  Get status: $(basename $0) ${AWS_IB_NAME} status --profile ${AWS_PROFILE} --region ${AWS_REGION}"
-  echo "  Stop: $(basename $0) ${AWS_IB_NAME} stop --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+  echo "  ${BOLD}Get status:${NC} $(basename $0) ${AWS_IB_NAME} status --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+  echo "  ${BOLD}Stop:${NC} $(basename $0) ${AWS_IB_NAME} stop --profile ${AWS_PROFILE} --region ${AWS_REGION}"
 fi
 
 if [[ "${AWS_IB_ACTION}" == "stop" ]]; then
   imagebuilder_is_pipeline_running "${AWS_IB_ARN}"
   [[ $? == "0" ]] && {
-    echo "error: no builds running for selected pipeline..."
-    exit 1
+    log_fatal "No builds running for selected pipeline..."
   }
 
   [[ -z "${AWS_IB_PIPELINE_BUILD_ARN}" ]] && {
     if ${IS_FZF}; then
       choose_imagebuilder_pipeline_build_interactive || {
-        echo "error: Could not get imagebuilder pipeline's builds"
-        exit 1
+        log_fatal "Could not get imagebuilder pipeline's builds"
       }
     else
-      echo "error: ImageBuilder pipeline build ARN is not defined!"
-      exit 1
+      log_fatal "ImageBuilder pipeline build ARN is not defined!"
     fi
   }
   aws imagebuilder cancel-image-creation --image-build-version-arn "${AWS_IB_PIPELINE_BUILD_ARN}" --profile ${AWS_PROFILE} --region ${AWS_REGION}

@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e
+
+AWS_CONFIG_FILE=${AWS_CONFIG_FILE:-$HOME/.aws/config}
+
+[[ -r "${AWS_CONFIG_FILE}" ]] || exit 1
+sed -n -e 's/^\[sso-session[[:space:]]\(.*\)\]$/\1/p' ${AWS_CONFIG_FILE}
+

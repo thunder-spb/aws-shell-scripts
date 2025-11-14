@@ -2,22 +2,21 @@
 
 set -e
 
-AWS_REGION=${AWS_REGION:-us-east-1}
-
-# Define color codes
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
-
-# Define icons
-CHECK_MARK="\xE2\x9C\x94"
-CROSS_MARK="\xE2\x9D\x8C"
-INFO="\xF0\x9F\x93\xA6"
-ARROW_UP="\xE2\x87\xB8"
-
 usage() {
-  echo -e "${YELLOW}${INFO} Usage: $(basename $0) [cloudwatch log group name] [cloudwatch log group's stream name] [-o|--outfile file_name] [-p|--profile AWS Profile Name] [-r|--region AWS Region Name]${NC}"
+  echo "Usage: $(basename $0) [cloudwatch log group name] [cloudwatch log group's stream name] [-o|--outfile file_name] [-p|--profile AWS Profile Name] [-r|--region AWS Region Name]"
+  echo ""
+  echo "Options:"
+  echo "  -o, --outfile FILE   Save logs to file instead of displaying"
+  echo "  -p, --profile NAME   AWS Profile Name"
+  echo "  -r, --region NAME    AWS Region Name"
+  echo "  -h, --help           Show this help message"
+  echo ""
+  echo "Examples:"
+  echo "  $(basename $0)                                    # Interactive mode (requires fzf)"
+  echo "  $(basename $0) /aws/lambda/my-function           # Interactive stream selection"
+  echo "  $(basename $0) /aws/lambda/my-function stream-1   # View specific log stream"
+  echo "  $(basename $0) /aws/lambda/my-function stream-1 --profile prod --region us-east-1"
+  echo "  $(basename $0) /aws/lambda/my-function stream-1 --outfile logs.txt"
 }
 
 POSITIONAL_ARGS=()
@@ -61,43 +60,6 @@ set -- "${POSITIONAL_ARGS[@]}"
 AWS_CW_LOGGROUP=$1
 AWS_CW_LOGSTREAM=$2
 
-IS_FZF=false
-[[ -t 1 && "$(type fzf &>/dev/null; echo $?)" -eq 0 ]] && IS_FZF=true
-
-err() {
-  echo -e "${RED}${CROSS_MARK} [$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*${NC}" >&2
-  exit 1
-}
-
-# This function is a wrapper around the `fzf` command with predefined options to customize its appearance and behavior.
-# It displays a fuzzy finder with a reverse layout, border, and custom color for labels.
-# The preview window is positioned on the right side with a line border.
-# This function takes additional arguments to further configure `fzf`.
-__fzf_base_fzf() {
-  fzf --ansi --height 50% --tmux 90%,70% \
-    --layout reverse --min-height 20+ --border \
-    --header-border horizontal \
-    --border-label-pos 2 \
-    --color 'label:white' \
-    --no-multi \
-    --preview-window 'right,80%' --preview-border line "$@"
-}
-
-# Prompt the user to choose an AWS profile using fzf.
-#
-# Exits 1 if the user does not choose any of the options.
-choose_profile_interactive() {
-  type aws-profiles &>/dev/null || { echo -e "${RED}${CROSS_MARK} ERROR: aws-profiles helper script is not available.${NC}"; exit 1;}
-  local choice
-  choice="$(aws-profiles | __fzf_base_fzf --border-label " 🤷 Profiles " || true)"
-  if [[ -z "${choice}" ]]; then
-    echo -e "${RED}${CROSS_MARK} error: you did not choose any of the options${NC}"
-    exit 1
-  else
-    AWS_PROFILE="${choice}"
-  fi
-}
-
 # Parse the output of a CLI command and concatenate it into the cli_parsed variable.
 #
 # This function takes an optional argument, cli_jq_query, which is the jq query to use to parse the output of the CLI command.
@@ -106,13 +68,12 @@ choose_profile_interactive() {
 __generic_pagination_parse() {
   if [ ! -z "$cli_output" ]; then
     if grep -q "Exception" <<< "${cli_output}"; then
-      echo -e "${RED}${CROSS_MARK} Error: aws query returned an error: $cli_output${NC}"
-      exit 1
+      log_fatal "AWS query returned an error: ${BOLD}${cli_output}${NC}"
     fi
     cli_parsed+="$(echo "$cli_output" | jq -r "${cli_jq_query}")"
     next_token=$(echo "$cli_output" | jq -r ".nextToken")
   else
-    err "cli_output is empty"
+    log_fatal "${BOLD}cli_output${NC} is empty"
   fi
 }
 
@@ -131,7 +92,7 @@ __generic_pagination_parse() {
 # between each iteration of the loop.
 __generic_getter() {
   if [[ -z "$cli_command" || -z "$cli_jq_query" ]]; then
-    err "cli_command or cli_jq_query is not defined"
+    log_fatal "${BOLD}cli_command${NC} or ${BOLD}cli_jq_query${NC} is not defined"
   fi
   cli_output=$($cli_command)
   __generic_pagination_parse
@@ -159,8 +120,7 @@ choose_loggroup_interactive() {
 
   choice=$(echo "$cli_parsed" | __fzf_base_fzf --ansi --no-preview --border-label " 📂 Log Groups " | sed 's/^\*//g' | awk '{print $1}' || true)
   if [[ -z "${choice}" ]]; then
-    echo -e "${RED}${CROSS_MARK} error: you did not choose any of the options${NC}"
-    exit 1
+    log_fatal "You did not choose any of loggroups"
   else
     AWS_CW_LOGGROUP="${choice}"
   fi
@@ -182,46 +142,38 @@ choose_logstream_interactive() {
 
   choice="$(echo "$cli_parsed" | __fzf_base_fzf --no-preview --border-label " 📝 Log Streams " | sed 's/^\*//g' | awk '{print $1}' || true)"
   if [[ -z "${choice}" ]]; then
-    echo -e "${RED}${CROSS_MARK} error: you did not choose any of the options${NC}"
-    exit 1
+    log_fatal "You did not choose any of the logstreams"
   else
     AWS_CW_LOGSTREAM="${choice}"
   fi
 }
 
-[[ -z ${AWS_PROFILE} ]] && {
-  if ${IS_FZF}; then
-    choose_profile_interactive
-  else
-    echo -e "${RED}${CROSS_MARK} AWS Profile is not defined!${NC}"
-    exit 1
-  fi
-}
-
 [[ -z ${AWS_CW_LOGGROUP} ]] && {
   if ${IS_FZF}; then
-    choose_loggroup_interactive || { echo -e "${RED}${CROSS_MARK} Could not get log groups${NC}"; exit 1; }
+    choose_loggroup_interactive || { log_fatal "Could not get log groups"; }
   else
-    echo -e "${RED}${CROSS_MARK} Log Group is not defined!${NC}"
-    exit 1
+    log_fatal "Log Group is not defined!"
   fi
 }
 
 [[ -z ${AWS_CW_LOGSTREAM} ]] && {
   if ${IS_FZF}; then
-    choose_logstream_interactive || { echo -e "${RED}${CROSS_MARK} Could not get log streams${NC}"; exit 1; }
+    choose_logstream_interactive || { log_fatal "Could not get log streams"; }
   else
-    echo -e "${RED}${CROSS_MARK} Log Group's Stream is not defined!${NC}"
-    exit 1
+    log_fatal "Log Group's Stream is not defined!"
   fi
 }
 
-echo -e "${GREEN}${CHECK_MARK} AWS Profile:${NC} ${AWS_PROFILE}"
-echo -e "${GREEN}${CHECK_MARK} AWS Region:${NC} ${AWS_REGION}"
-echo -e "${GREEN}${CHECK_MARK} Log Group:${NC} ${AWS_CW_LOGGROUP}"
-echo -e "${GREEN}${CHECK_MARK} Log Group Stream:${NC} ${AWS_CW_LOGSTREAM}"
-echo -e "${GREEN}${CHECK_MARK} Command for direct query:${NC} $0 '${AWS_CW_LOGGROUP}' '${AWS_CW_LOGSTREAM}' --profile ${AWS_PROFILE} --region ${AWS_REGION} "
-[[ ! -z ${OUTFILE} ]] && { echo -e "${GREEN}${ARROW_UP} Redirecting output to:${NC} ${OUTFILE}"; }
+check_aws_profile
+check_aws_region
+
+log_ok "${BOLD}AWS Profile:${NC} ${AWS_PROFILE}"
+log_ok "${BOLD}AWS Region:${NC} ${AWS_REGION}"
+log_ok "${BOLD}Log Group:${NC} ${AWS_CW_LOGGROUP}"
+log_ok "${BOLD}Log Group Stream:${NC} ${AWS_CW_LOGSTREAM}"
+log_ok "${BOLD}Command for direct query:${NC} $0 '${AWS_CW_LOGGROUP}' '${AWS_CW_LOGSTREAM}' --profile ${AWS_PROFILE} --region ${AWS_REGION}"
+
+[[ ! -z ${OUTFILE} ]] && { log_ok "${BOLD}Redirecting output to:${NC} ${OUTFILE}"; }
 
 # Retrieves log events from a specified AWS CloudWatch log group and log stream.
 # If log events are found, they are either printed to the console or redirected to an output file.
@@ -235,8 +187,7 @@ get_logs() {
         --region ${AWS_REGION} \
         --profile ${AWS_PROFILE})
     if [[ -z "${log_events_json}" || $(echo "${log_events_json}" | jq '.events | length') -eq 0 ]]; then
-      echo -e "${RED}${CROSS_MARK} Could not get log events${NC}"
-      exit 1
+      log_fatal "Could not get log events"
     fi
     log_events=$(echo "${log_events_json}" \
         | jq -r '.events[].message')
@@ -248,7 +199,7 @@ get_logs() {
         --header "SHIFT-UP/DOWN: scroll up/down" \
         --header-first \
         --tiebreak begin \
-        --preview-window right,80% \
+        --preview-window right,80%,wrap \
         --preview-border rounded \
         --preview-label " 📜 Log " \
         --preview-label-pos 0 \
