@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -e
-
 usage() {
   echo "Usage: $(basename $0) [cloudwatch log group name] [cloudwatch log group's stream name] [-o|--outfile file_name] [-p|--profile AWS Profile Name] [-r|--region AWS Region Name]"
   echo ""

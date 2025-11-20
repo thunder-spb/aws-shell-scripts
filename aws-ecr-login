@@ -62,8 +62,6 @@ check_aws_region
 log_ok "AWS Profile: ${AWS_PROFILE}"
 log_ok "AWS Region: ${AWS_REGION}"
 
-check_sso_login
-
 AWS_ECR_REGISTRY_ID=$(aws ecr describe-registry --profile ${AWS_PROFILE} | jq -r '.registryId')
 AWS_ECR_REGISTRY_ENDPOINT="${AWS_ECR_REGISTRY_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 log_info "Getting docker creds for ${AWS_ECR_REGISTRY_ENDPOINT}"

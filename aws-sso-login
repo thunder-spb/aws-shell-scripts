@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -e
-
 SCRIPT_PATH=$(dirname $(readlink -f "${0}"))
 source "${SCRIPT_PATH}/aws-functions.sh"
 
@@ -18,8 +16,6 @@ usage() {
   echo "  $(basename $0) --profile prod --region us-east-1"
   echo "  $(basename $0) --profile dev"
 }
-
-POSITIONAL_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case $1 in
